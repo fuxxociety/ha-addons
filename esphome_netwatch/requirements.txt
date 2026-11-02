@@ -1,0 +1,4 @@
+aioesphomeapi==46.12.0
+aiohttp>=3.10
+PyYAML>=6.0
+mac-vendor-lookup==0.1.15

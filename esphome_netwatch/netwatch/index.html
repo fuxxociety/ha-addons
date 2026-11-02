@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NetWatch</title>
+<style>
+  :root { --bg:#fff; --fg:#1b1d21; --mute:#6b7080; --line:#e3e5ea; --bad:#c62828; --warn:#b26a00; --ok:#2e7d32; --hl:#f3f5f9; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#16181c; --fg:#e6e8ec; --mute:#959aa6; --line:#2b2f36; --bad:#ef6b6b; --warn:#e3a33b; --ok:#6cc070; --hl:#1f2228; } }
+  body { margin:0; padding:16px 20px; font:13px/1.4 system-ui, sans-serif; background:var(--bg); color:var(--fg); }
+  h1 { font-size:18px; margin:0 0 4px; } h2 { font-size:14px; margin:24px 0 6px; }
+  .bar { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin:8px 0 12px; color:var(--mute); }
+  select, label, button { font:inherit; color:inherit; } select, button { background:var(--bg); border:1px solid var(--line); border-radius:4px; padding:2px 6px; }
+  table { border-collapse:collapse; width:100%; } th, td { padding:4px 8px; border-bottom:1px solid var(--line); text-align:left; white-space:nowrap; }
+  th { color:var(--mute); font-weight:500; cursor:pointer; position:sticky; top:0; background:var(--bg); }
+  td.n, th.n { text-align:right; font-variant-numeric:tabular-nums; }
+  tbody tr:hover { background:var(--hl); cursor:pointer; }
+  .bad { color:var(--bad); } .warn { color:var(--warn); } .ok { color:var(--ok); } .mute { color:var(--mute); }
+  #ev { margin-top:8px; } #ev td { white-space:normal; }
+  .wrap { overflow-x:auto; }
+  .mono { font-family:ui-monospace, Consolas, "Cascadia Mono", monospace; }
+</style>
+</head>
+<body>
+<h1>NetWatch</h1>
+<div class="bar">
+  <span id="meta"></span>
+  <label>Window <select id="win"><option>1h</option><option>6h</option><option>24h</option><option selected>7d</option><option>14d</option></select></label>
+  <label><input type="checkbox" id="esp" checked> ESPHome / inventory only</label>
+  <span id="upd"></span>
+</div>
+<div class="wrap"><table id="t"><thead></thead><tbody></tbody></table></div>
+<h2>By hardware class</h2>
+<div class="wrap"><table id="cls"><thead></thead><tbody></tbody></table></div>
+<h2>By access point (BSSID last reported by the device)</h2>
+<div class="wrap"><table id="ap"><thead></thead><tbody></tbody></table></div>
+<h2 id="evh"></h2>
+<div class="wrap"><table id="ev"><tbody></tbody></table></div>
+<script>
+const COLS = [
+  ["name","Device"], ["ip","IP"], ["class","Class"], ["verdict","Verdict"], ["score","Trouble/day","n"], ["observed_days","Observed d","n"],
+  ["reboots","Reboots","n"], ["drops_wifi","Drops (no reboot)","n"], ["drops_reboot","Drops w/ reboot","n"],
+  ["downtime_min","Down min","n"], ["ping_loss","Ping loss %","n"], ["ping_ms","Ping ms","n"], ["arp_fail","ARP fail %","n"],
+  ["mdns_fail","mDNS fail %","n"], ["api_fail","API fail %","n"], ["api_mode","API"], ["http_mode","HTTP"],
+  ["rssi","RSSI","n"], ["bssid","BSSID"], ["roams","Roams","n"], ["ip_changes","IP chg","n"], ["version","Version"], ["mac","MAC"], ["vendor","Vendor"],
+];
+const DEC = {ping_ms: 1, rssi: 1};            // fixed decimals
+const MONO = new Set(["mac", "bssid"]);
+// IPs sort by value, not as text (.2 < .50 < .100)
+const ipNum = ip => ip ? ip.split(".").reduce((n, o) => n * 256 + +o, 0) : null;
+const sortVal = (r, k) => k === "ip" ? ipNum(r.ip) : r[k];
+const show = (r, k) => { let v = r[k];
+  if (Array.isArray(v)) v = v.join(",");
+  if (v === null || v === undefined || v === "") return v;
+  if (k in DEC && typeof v === "number") return v.toFixed(DEC[k]);
+  if (k === "mac") return String(v).toUpperCase();
+  return v; };
+let data = [], sortKey = "score", sortDir = -1, sel = null;
+const $ = s => document.querySelector(s);
+const fmt = v => v === null || v === undefined || v === "" ? "<span class=mute>–</span>" : v;
+const cls = r => r.verdict === "ok" ? "ok" : /offline|power|credentials/.test(r.verdict) ? "bad" : r.verdict === "never seen" ? "mute" : "warn";
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+async function load() {
+  const w = $("#win").value;
+  const j = await (await fetch(`api/hosts?window=${w}`)).json();
+  data = j.hosts;
+  $("#meta").textContent = `${j.subnet} · ARP ${j.arp ? "on-link" : "unavailable"} · ${data.filter(r => r.up).length} up`;
+  $("#upd").textContent = "updated " + new Date().toLocaleTimeString();
+  render();
+  if (sel) showEvents(sel);
+}
+function render() {
+  const rows = data.filter(r => !$("#esp").checked || r.api_mode || r.class || (r.ports || []).includes(6053))
+    .sort((a, b) => { const x = sortVal(a, sortKey), y = sortVal(b, sortKey);
+      return (x === y ? 0 : x === null || x === undefined ? 1 : y === null || y === undefined ? -1 : x > y ? 1 : -1) * sortDir; });
+  $("#t thead").innerHTML = "<tr>" + COLS.map(([k, l, n]) => `<th class="${n || ""}" data-k="${k}">${l}${k === sortKey ? (sortDir > 0 ? " ▲" : " ▼") : ""}</th>`).join("") + "</tr>";
+  $("#t tbody").innerHTML = rows.map(r => `<tr data-key="${esc(r.key)}">` + COLS.map(([k, , n]) => {
+    const v = show(r, k);
+    const c = (k === "verdict" ? cls(r) : "") + (MONO.has(k) ? " mono" : "");
+    return `<td class="${n || ""} ${c}">${k === "name" ? esc(v || r.hostname || r.key) : fmt(v === undefined || v === null ? v : esc(v))}</td>`;
+  }).join("") + "</tr>").join("");
+  document.querySelectorAll("#t th").forEach(th => th.onclick = () => {
+    const k = th.dataset.k; sortDir = k === sortKey ? -sortDir : (COLS.find(c => c[0] === k)[2] ? -1 : 1); sortKey = k; render(); });
+  document.querySelectorAll("#t tbody tr").forEach(tr => tr.onclick = () => { sel = tr.dataset.key; showEvents(sel); });
+  // per hardware class: are the reboots concentrated in one board type?
+  const g = {};
+  for (const r of data) { if (!r.class) continue; const c = g[r.class] ||= {n:0, up:0, reboots:0, wifi:0, rb_dev:0};
+    c.n++; c.up += r.up ? 1 : 0; c.reboots += r.reboots || 0; c.wifi += r.drops_wifi || 0; c.rb_dev += (r.reboots || 0) > 0 ? 1 : 0; }
+  $("#cls thead").innerHTML = "<tr><th>Class</th><th class=n>Devices</th><th class=n>Up</th><th class=n>Devices rebooting</th><th class=n>Reboots</th><th class=n>Wi-Fi drops</th></tr>";
+  $("#cls tbody").innerHTML = Object.entries(g).sort((a, b) => b[1].reboots - a[1].reboots).map(([k, c]) =>
+    `<tr><td>${esc(k)}</td><td class=n>${c.n}</td><td class=n>${c.up}</td><td class=n>${c.rb_dev}</td><td class=n>${c.reboots}</td><td class=n>${c.wifi}</td></tr>`).join("");
+  // per AP: is the trouble following one radio rather than one board type?
+  const a = {};
+  for (const r of data) { if (!r.bssid) continue; const c = a[r.bssid] ||= {n:0, lossy:0, loss:0, lossn:0, wifi:0, rssi:0, rssin:0};
+    c.n++; c.wifi += r.drops_wifi || 0;
+    if (r.ping_loss !== null && r.ping_loss !== undefined) { c.loss += r.ping_loss; c.lossn++; if (r.ping_loss > 2) c.lossy++; }
+    if (r.rssi !== null && r.rssi !== undefined) { c.rssi += r.rssi; c.rssin++; } }
+  $("#ap thead").innerHTML = "<tr><th>BSSID</th><th class=n>Devices</th><th class=n>With loss &gt;2%</th><th class=n>Mean ping loss %</th><th class=n>Wi-Fi drops</th><th class=n>Mean RSSI</th></tr>";
+  $("#ap tbody").innerHTML = Object.entries(a).sort((x, y) => y[1].n - x[1].n).map(([k, c]) =>
+    `<tr><td class=mono>${esc(k)}</td><td class=n>${c.n}</td><td class=n>${c.lossy}</td><td class=n>${c.lossn ? (c.loss / c.lossn).toFixed(1) : "–"}</td><td class=n>${c.wifi}</td><td class=n>${c.rssin ? (c.rssi / c.rssin).toFixed(1) : "–"}</td></tr>`).join("");
+}
+async function showEvents(key) {
+  const j = await (await fetch(`api/host/${encodeURIComponent(key)}/events?window=${$("#win").value}`)).json();
+  const h = j.host || {};
+  $("#evh").innerHTML = `Events: ${esc(h.friendly || h.name || key)} <span class=mute><span class=mono>${esc(h.ip || "")} ${esc((h.mac || "").toUpperCase())}</span></span> <button id=pn>Probe now</button>`;
+  $("#pn").onclick = async () => { $("#pn").disabled = true; await fetch(`api/host/${encodeURIComponent(key)}/probe`, {method: "POST"}); load(); };
+  $("#ev tbody").innerHTML = j.events.map(e => `<tr><td>${new Date(e.ts * 1000).toLocaleString()}</td><td>${esc(e.kind)}</td><td>${esc(e.ip || "")}</td><td>${esc(e.detail || "")}</td></tr>`).join("")
+    || "<tr><td class=mute>no events in this window</td></tr>";
+}
+$("#win").onchange = load; $("#esp").onchange = render;
+load(); setInterval(load, 30000);
+</script>
+</body>
+</html>
