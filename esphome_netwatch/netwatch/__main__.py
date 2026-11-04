@@ -8,9 +8,9 @@ import signal
 import sys
 from pathlib import Path
 
-import yaml
 from aiohttp import web
 
+from .builder import DeviceBuilder
 from .monitor import Monitor
 from .store import Store
 from .vendor import Vendors
@@ -45,47 +45,6 @@ def detect_subnet():
     return None
 
 
-def load_creds(o):
-    """Explicit options win; otherwise read the named keys from the ESPHome secrets.yaml. Never logged."""
-    sec = {}
-    p = o.get("secrets_path")
-    if p and Path(p).is_file():
-        try:
-            sec = yaml.safe_load(Path(p).read_text(encoding="utf-8")) or {}
-        except yaml.YAMLError as e:
-            log.warning("could not parse %s: %s", p, e.__class__.__name__)
-    elif p:
-        log.warning("secrets file %s not found", p)
-    creds = {}
-    for field, name_opt, default in (("api_key", "secret_api_key", "api_enc_key"),
-                                     ("api_password", "secret_api_password", "esphome_api_password"),
-                                     ("web_username", "secret_web_username", "esphome_web_server_username"),
-                                     ("web_password", "secret_web_password", "esphome_web_server_password")):
-        v = o.get(field) or sec.get(o.get(name_opt) or default)
-        creds[field] = str(v) if v else None
-    log.info("credentials: %s", ", ".join(f"{k}={'set' if v else 'none'}" for k, v in creds.items()))
-    return creds
-
-
-def load_inventory(p):
-    """naming.yaml devices by MAC: friendly_name, new_hostname, class, live."""
-    if not p or not Path(p).is_file():
-        return {}
-    try:
-        doc = yaml.safe_load(Path(p).read_text(encoding="utf-8")) or {}
-    except yaml.YAMLError:
-        log.warning("could not parse inventory %s", p)
-        return {}
-    from .probes import norm_mac
-    inv = {}
-    for d in doc.get("devices") or []:
-        mac = norm_mac(d.get("mac"))
-        if mac:
-            inv[mac] = {k: d.get(k) for k in ("friendly_name", "new_hostname", "class", "live")}
-    log.info("inventory: %d devices with a MAC", len(inv))
-    return inv
-
-
 async def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--options", default="/data/options.json")
@@ -112,10 +71,9 @@ async def main():
         sys.exit(f"subnet {net} is too large to sweep (more than 1022 hosts); set a /22 or smaller in Configuration")
     Path(a.data).mkdir(parents=True, exist_ok=True)
     store = Store(str(Path(a.data) / "netwatch.db"))
-    inventory = load_inventory(o.get("inventory_path"))
-    mon = Monitor(o, store, load_creds(o))
+    mon = Monitor(o, store, DeviceBuilder(o))
     mon.vendors = Vendors(a.data)
-    runner = web.AppRunner(make_app(mon, inventory, ingress_only=addon))
+    runner = web.AppRunner(make_app(mon, ingress_only=addon))
     await runner.setup()
     await web.TCPSite(runner, a.bind or ("0.0.0.0" if addon else "127.0.0.1"), a.port).start()
     log.info("watching %s, %d known hosts", o["subnet"], len(mon.hosts))

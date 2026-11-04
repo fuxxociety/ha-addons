@@ -20,11 +20,16 @@ log = logging.getLogger("netwatch")
 REBOOT_SLACK = 120          # boot-time estimates jitter by API latency / SNTP; ignore smaller shifts
 
 
+CRED_FIELDS = ("api_key", "api_password", "web_username", "web_password")
+
+
 class Monitor:
-    def __init__(self, opts, store, creds):
+    def __init__(self, opts, store, builder):
         self.o = opts
         self.store = store
-        self.creds = creds
+        self.builder = builder                    # per-device credentials + labels (builder.py)
+        # add-on options: only for devices the Device Builder does not know
+        self.fallback = {k: opts.get(k) or None for k in CRED_FIELDS}
         self.net = ipaddress.ip_network(opts["subnet"], strict=False)
         self.exclude = set(opts.get("exclude") or [])
         self.hosts = store.load_hosts()
@@ -36,6 +41,7 @@ class Monitor:
         self.misses = {}
         self.api_sem = asyncio.Semaphore(3)       # ESP8266s have few API slots; never stack sessions
         self.api_busy = set()
+        self.probing = set()                      # IPs with a discovery probe pending
         self.ping_sem = asyncio.Semaphore(64)
         self.browser = mdns.Browser(self._mdns_seen, self._mdns_gone)
         self.has_arp = None
@@ -63,7 +69,28 @@ class Monitor:
         self.by_ip[ip] = h["key"]
         self.ev(h, "new")
         self.save(h)
+        self.probe_soon(ip)
         return h
+
+    def probe_soon(self, ip):
+        """Ports + API for a host that just appeared or changed identity, instead of waiting for the hourly
+        port pass (the API loop only probes hosts whose ports include 6053)."""
+        if not ip or ip in self.exclude or ip in self.probing:
+            return
+        self.probing.add(ip)
+
+        async def run():
+            try:
+                await asyncio.sleep(2)               # let ARP / mDNS settle the identity first
+                h = self.host_for_ip(ip, create=False)
+                if h:
+                    await self._ports(h["key"])
+                h = self.host_for_ip(ip, create=False)
+                if h and (6053 in (h.get("ports") or []) or h.get("mdns")):
+                    await self._api(h["key"])
+            finally:
+                self.probing.discard(ip)
+        asyncio.ensure_future(run())
 
     def learn_mac(self, ip, mac, source):
         """Returns the (possibly re-keyed) host now owning ip."""
@@ -108,6 +135,7 @@ class Monitor:
         self.by_ip[ip] = mac
         self.misses.pop(ip, None)
         self.save(owner)
+        self.probe_soon(ip)                              # new chip / reassigned IP: refresh what it is now
         return owner
 
     # ping + ARP ---------------------------------------------------------
@@ -179,8 +207,8 @@ class Monitor:
             for ip in fresh:
                 h = self.host_for_ip(ip)
                 if arp.get(ip, "incomplete") != "incomplete":
-                    h = self.learn_mac(ip, arp[ip], "arp")
-                asyncio.ensure_future(self._ports(h["key"]))
+                    self.learn_mac(ip, arp[ip], "arp")
+                self.probe_soon(ip)
             self.store.flush()
             await asyncio.sleep(max(5, self.o["sweep_interval"] - (time.monotonic() - t0)))
 
@@ -228,8 +256,7 @@ class Monitor:
         self.api_busy.add(key)
         try:
             async with self.api_sem:
-                r = await probes.api_probe(h["ip"], self.creds.get("api_key"), self.creds.get("api_password"),
-                                           self.browser.zeroconf, prefer=h.get("api_mode"))
+                r = await self._api_probe(h["ip"], h.get("name") or h.get("mdns"), h.get("api_mode"))
         finally:
             self.api_busy.discard(key)
         ip = h["ip"]
@@ -278,6 +305,28 @@ class Monitor:
                 h["boot_ts"] = r["boot_ts"]
         self.save(h)
 
+    def creds(self, name):
+        c = self.builder.creds_for(name)
+        return {k: c.get(k) or self.fallback[k] for k in CRED_FIELDS}
+
+    async def _api_probe(self, ip, name, prefer):
+        """With the device's own key from the Device Builder. A host that has not named itself yet gets the fleet's
+        keys in turn; a rejected key still names the device (noise hello), so its own key is tried next."""
+        c = self.creds(name)
+        keys = [c["api_key"]] if c["api_key"] else (self.builder.keys() or [None])
+        r = None
+        for i, psk in enumerate(keys):
+            r = await probes.api_probe(ip, psk, c["api_password"], self.browser.zeroconf,
+                                       prefer=prefer if i == 0 else None)
+            if r["mode"] != "encrypted:key_bad":
+                return r
+            own = self.creds(r.get("name")) if r.get("name") and r["name"] != name else None
+            if own and own["api_key"] and own["api_key"] != psk:
+                return await probes.api_probe(ip, own["api_key"], own["api_password"], self.browser.zeroconf)
+        if name:
+            self.builder.rejected(name)
+        return r
+
     # HTTP ---------------------------------------------------------------
     async def http_loop(self):
         await asyncio.sleep(60)
@@ -288,7 +337,8 @@ class Monitor:
                 h = self.hosts.get(k)
                 if not h:
                     continue
-                r = await probes.http_probe(h["ip"], self.creds.get("web_username"), self.creds.get("web_password"))
+                c = self.creds(h.get("name") or h.get("mdns"))
+                r = await probes.http_probe(h["ip"], c["web_username"], c["web_password"])
                 self.store.stat(k, "http", r["ok"], r.get("ms"))
                 if r["mode"] != h.get("http_mode") and not (h.get("http_mode") is None and r["mode"] == "open"):
                     self.ev(h, "http_mode", f"{h.get('http_mode')} -> {r['mode']}")
@@ -307,6 +357,7 @@ class Monitor:
         h = self.host_for_ip(ips[0])
         if txt.get("mac"):
             h = self.learn_mac(ips[0], txt["mac"], "mdns")
+        renamed = h.get("mdns") != host
         h["mdns"] = host
         h.setdefault("name", host)
         for src, dst in (("version", "version"), ("platform", "platform"), ("board", "board")):
@@ -314,6 +365,8 @@ class Monitor:
                 h[dst] = txt[src]
         self.by_mdns[host] = h["key"]
         self.save(h)
+        if renamed or not h.get("api_mode"):
+            self.probe_soon(ips[0])
 
     def _mdns_gone(self, host):
         k = self.by_mdns.get(host)
@@ -346,4 +399,4 @@ class Monitor:
 
     def tasks(self):
         return [self.ping_loop(), self.sweep_loop(), self.ports_loop(), self.api_loop(),
-                self.http_loop(), self.mdns_loop(), self.prune_loop()]
+                self.http_loop(), self.mdns_loop(), self.prune_loop(), self.builder.run()]

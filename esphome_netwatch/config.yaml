@@ -1,5 +1,5 @@
 name: ESPHome NetWatch
-version: "0.1.1"
+version: "0.2.0"
 slug: esphome_netwatch
 description: >-
   Tracks every MAC on the IoT subnet and ranks devices by connectivity trouble
@@ -20,18 +20,14 @@ ingress_port: 8099
 watchdog: tcp://[HOST]:[PORT:8099]
 panel_icon: mdi:wifi-alert
 panel_title: NetWatch
-map:
-  # read-only: secrets.yaml and naming/naming.yaml of the ESPHome config
-  - homeassistant_config:ro
+# Supervisor API: finds the ESPHome add-on's ingress port (/addons/<slug>/info). Devices, names and per-device
+# credentials then come from the Device Builder's own API, as Home Assistant's ESPHome integration gets them.
+hassio_api: true
 options:
   # blank = the HA host's own LAN subnet
   subnet: ""
-  secrets_path: /homeassistant/esphome/secrets.yaml
-  inventory_path: /homeassistant/esphome/naming/naming.yaml
-  secret_api_key: api_enc_key
-  secret_api_password: esphome_api_password
-  secret_web_username: esphome_web_server_username
-  secret_web_password: esphome_web_server_password
+  esphome_addon: 5c53de3b_esphome
+  builder_interval: 900
   ping_interval: 30
   sweep_interval: 300
   api_interval: 600
@@ -42,13 +38,12 @@ options:
   exclude: []
 schema:
   subnet: str?
-  secrets_path: str?
-  inventory_path: str?
-  secret_api_key: str?
-  secret_api_password: str?
-  secret_web_username: str?
-  secret_web_password: str?
-  # explicit values win over secrets.yaml
+  # slug of the ESPHome Device Builder add-on, as in its page URL (/hassio/addon/<slug>)
+  esphome_addon: str?
+  # instead of the add-on: a Device Builder URL (local runs)
+  esphome_url: str?
+  builder_interval: int(120,7200)
+  # only for devices the Device Builder does not know
   api_key: password?
   api_password: password?
   web_username: str?

@@ -12,7 +12,7 @@ INGRESS_PEER = "172.30.32.2"
 WINDOWS = {"1h": 3600, "6h": 6 * 3600, "24h": 86400, "7d": 7 * 86400, "14d": 14 * 86400}
 
 
-def make_app(mon, inventory, ingress_only):
+def make_app(mon, ingress_only):
     @web.middleware
     async def guard(request, handler):
         if ingress_only and request.remote != INGRESS_PEER:
@@ -26,7 +26,7 @@ def make_app(mon, inventory, ingress_only):
         return web.FileResponse(Path(__file__).with_name("index.html"))
 
     async def hosts(request):
-        rows = rank(mon, window(request), inventory)
+        rows = rank(mon, window(request), mon.builder.devices)
         return web.json_response({"now": time.time(), "subnet": str(mon.net), "arp": mon.has_arp, "hosts": rows})
 
     async def events(request):

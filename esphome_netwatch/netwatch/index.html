@@ -26,7 +26,7 @@
 <div class="bar">
   <span id="meta"></span>
   <label>Window <select id="win"><option>1h</option><option>6h</option><option>24h</option><option selected>7d</option><option>14d</option></select></label>
-  <label><input type="checkbox" id="esp" checked> ESPHome / inventory only</label>
+  <label><input type="checkbox" id="esp" checked> ESPHome only</label>
   <span id="upd"></span>
 </div>
 <div class="wrap"><table id="t"><thead></thead><tbody></tbody></table></div>
@@ -38,7 +38,7 @@
 <div class="wrap"><table id="ev"><tbody></tbody></table></div>
 <script>
 const COLS = [
-  ["name","Device"], ["ip","IP"], ["class","Class"], ["verdict","Verdict"], ["score","Trouble/day","n"], ["observed_days","Observed d","n"],
+  ["name","Device"], ["ip","IP"], ["area","Area"], ["class","Class"], ["verdict","Verdict"], ["score","Trouble/day","n"], ["observed_days","Observed d","n"],
   ["reboots","Reboots","n"], ["drops_wifi","Drops (no reboot)","n"], ["drops_reboot","Drops w/ reboot","n"],
   ["downtime_min","Down min","n"], ["ping_loss","Ping loss %","n"], ["ping_ms","Ping ms","n"], ["arp_fail","ARP fail %","n"],
   ["mdns_fail","mDNS fail %","n"], ["api_fail","API fail %","n"], ["api_mode","API"], ["http_mode","HTTP"],

@@ -27,6 +27,12 @@ def _num(d, k):
         return None
 
 
+def hw_class(inv, h):
+    """Hardware class: the config's `esphome: comment:`, else the board / platform the device or the Device Builder
+    reports."""
+    return inv.get("comment") or h.get("model") or inv.get("target_platform") or h.get("platform") or ""
+
+
 def _decay(age):
     return 0.5 ** (max(0.0, age) / HALF_LIFE)
 
@@ -37,7 +43,8 @@ def _obs_days(span):
     return HALF_LIFE / math.log(2) * (1 - _decay(span)) / 86400
 
 
-def rank(mon, window, inventory):
+def rank(mon, window, configured):
+    """configured: the Device Builder's devices by name (builder.py)."""
     now = time.time()
     since = now - window
     stats = {}
@@ -49,11 +56,24 @@ def rank(mon, window, inventory):
     vendor = getattr(mon, "vendors", None)
     vendor = vendor.lookup if vendor else (lambda mac: "")
     slack = mon.o["ping_interval"] * (mon.o["outage_misses"] + 1) + 90
+    by_name = {n.lower(): d for n, d in configured.items()}
+    by_mac = {d["mac"]: d for d in configured.values() if d.get("mac")}
+    matched = set()
+
+    def lookup(h):
+        """What the device says it is wins: a swapped chip keeps its name, not its MAC. MAC only for hosts that
+        have not named themselves (no API / mDNS answer yet)."""
+        reported = h.get("name") or h.get("mdns")
+        if reported:
+            return by_name.get(reported.lower(), {})
+        return by_mac.get(h.get("mac") or "", {})
 
     rows = []
     for key, h in mon.hosts.items():
         s, e = stats.get(key, {}), evs.get(key, [])
-        inv = inventory.get(h.get("mac") or "", {})
+        inv = lookup(h)
+        if inv:
+            matched.add(inv["name"])
 
         def pct_fail(p, min_sent=1):
             sent, ok = s.get(p, (0, 0, 0, 0))[:2]
@@ -103,9 +123,9 @@ def rank(mon, window, inventory):
             verdict = "ok"
         rows.append({
             "key": key, "mac": h.get("mac"), "ip": h.get("ip"), "vendor": vendor(h.get("mac")),
-            "name": inv.get("friendly_name") or h.get("friendly") or h.get("name") or h.get("http_info") or "",
-            "hostname": h.get("name") or h.get("mdns") or inv.get("new_hostname") or "",
-            "class": inv.get("class") or "", "version": h.get("version") or "",
+            "name": h.get("friendly") or inv.get("friendly_name") or h.get("name") or h.get("http_info") or "",
+            "hostname": h.get("name") or h.get("mdns") or inv.get("name") or "",
+            "class": hw_class(inv, h), "area": inv.get("area") or "", "version": h.get("version") or "",
             "ports": h.get("ports") or [], "api_mode": mode, "api_last": h.get("api_last") or "",
             "http_mode": h.get("http_mode") or "", "bssid": h.get("bssid") or "",
             "up": bool(h.get("up")), "last_seen": h.get("last_seen"), "boot_ts": h.get("boot_ts"),
@@ -119,11 +139,11 @@ def rank(mon, window, inventory):
             "roams": sum(1 for _, k, _ in e if k == "roam"),
             "mdns_goodbyes": sum(1 for _, k, _ in e if k == "mdns_goodbye"), "rssi": rssi,
         })
-    seen = {r["mac"] for r in rows if r["mac"]}
-    for mac, inv in inventory.items():
-        if inv.get("live") and mac not in seen:
-            rows.append({"key": mac, "mac": mac, "ip": None, "vendor": vendor(mac), "name": inv.get("friendly_name") or "",
-                         "hostname": inv.get("new_hostname") or "", "class": inv.get("class") or "",
-                         "up": False, "score": 0, "verdict": "never seen", "ports": []})
+    for name, inv in configured.items():
+        if name not in matched:
+            mac = inv.get("mac")
+            rows.append({"key": mac or f"name:{name}", "mac": mac, "ip": None, "vendor": vendor(mac) if mac else "",
+                         "name": inv.get("friendly_name") or "", "hostname": name, "class": hw_class(inv, {}),
+                         "area": inv.get("area") or "", "up": False, "score": 0, "verdict": "never seen", "ports": []})
     rows.sort(key=lambda r: (-r["score"], r["verdict"] == "never seen", r["ip"] or ""))
     return rows
