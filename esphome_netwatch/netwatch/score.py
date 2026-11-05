@@ -10,6 +10,9 @@ Meant for a monitor that runs for weeks: a single blip barely registers, but bli
 The split that matters for hardware hunting:
   drop + reboot   -> lost power or crashed (brown-out, failing regulator/capacitor, watchdog)
   drop, no reboot -> stayed up but fell off Wi-Fi (RF, AP, roaming, DHCP)
+
+A firmware update is maintenance, not a fault: the reboot and what it causes around that moment (a short outage,
+a failed API probe, an mDNS goodbye, a roam) neither score nor count as drops.
 """
 import json
 import math
@@ -18,6 +21,11 @@ import time
 HALF_LIFE = 3 * 86400
 MIN_OBS = 86400                 # a new host is scored as if seen for at least a day
 W = {"reboot": 8.0, "ip_change": 2.0, "ip_reassigned": 2.0, "api_fail": 0.5, "mdns_goodbye": 0.25, "roam": 0.25}
+OTA_PRE = 300                   # an upload can stall the device this long before it reboots
+OTA_POST = 300                  # ... and it can take this long to rejoin
+OTA_MAX_OUTAGE = 600            # longer than this is a failed flash or a dead device: it counts
+# sightings that prove a host is back; 'reboot' is not one, its timestamp is the boot time, not when it was seen
+ALIVE = ("new", "mac_learned", "ip_change", "api_ok", "firmware", "roam")
 
 
 def _num(d, k):
@@ -25,6 +33,39 @@ def _num(d, k):
         return json.loads(d).get(k) if d and d.startswith("{") else None
     except ValueError:
         return None
+
+
+def _outages(e, h, now):
+    """[(start, end)] from events in time order. An 'up' closes an outage; for one recorded without an 'up' (a host
+    that came back on a new IP) the next sighting does. Still open and the host is down: it runs until now."""
+    out, start = [], None
+    for ts, k, d in e:
+        if k == "down":
+            if start is not None:
+                out.append((start, ts))
+            start = ts
+        elif k == "up":
+            begin = ts - (_num(d, "duration") or 0)
+            if start is None and out and abs(out[-1][0] - begin) <= 120:
+                out.pop()                       # a sighting closed it first; the 'up' is exact
+            out.append((begin, ts))
+            start = None
+        elif k in ALIVE and start is not None:
+            out.append((start, ts))
+            start = None
+    if start is not None:
+        out.append((start, now if not h.get("up") else max(start, h.get("last_seen") or start)))
+    elif not h.get("up") and h.get("down_since"):
+        out.append((h["down_since"], now))      # went down before the window
+    return out
+
+
+def _online_loss(sent, ok, offline, interval):
+    """Ping loss while the host was meant to be reachable. Outages score as outages; counting their missed pings
+    as loss too would rate a repaired device as lossy for the whole window."""
+    missed = sent - ok
+    gone = min(missed, offline / interval)
+    return round(100 * (missed - gone) / (sent - gone), 1) if sent - gone >= 20 else None
 
 
 def hw_class(inv, h):
@@ -83,22 +124,29 @@ def rank(mon, window, configured):
             v = s.get(p)
             return round(v[2] / v[3], 1) if v and v[3] else None
 
-        downs = [ts for ts, k, _ in e if k == "down"]
+        flashes = [ts for ts, k, d in e if k == "reboot" and _num(d, "cause") == "ota"]
         reboots = [ts for ts, k, d in e if k == "reboot" and _num(d, "cause") != "ota"]
-        ups = [(ts, _num(d, "duration") or 0) for ts, k, d in e if k == "up"]
-        if not h.get("up") and h.get("down_since"):
-            ups.append((now, now - max(h["down_since"], since)))     # ongoing outage
-        downtime = sum(d for _, d in ups)
-        drops_reboot = sum(1 for d in downs if any(d - slack <= r <= d + slack * 4 for r in reboots))
-        drops_wifi = len(downs) - drops_reboot
 
-        trouble = sum(w * _decay(now - ts) for ts, k, _ in e for kind, w in W.items() if k == kind) \
-            - sum(W["reboot"] * _decay(now - ts) for ts, k, d in e if k == "reboot" and _num(d, "cause") == "ota")
-        trouble += sum((1 + math.log2(1 + dur / 60)) * _decay(now - ts) for ts, dur in ups)
+        def ota_caused(t, lag=0):
+            return any(b - OTA_PRE <= t <= b + OTA_POST + lag for b in flashes)
+
+        outages = _outages(e, h, now)
+        faults = [(a, b) for a, b in outages
+                  if not (ota_caused(a) and b - a <= OTA_MAX_OUTAGE and (h.get("up") or b < now))]
+        downtime = sum(b - max(a, since) for a, b in faults)
+        drops_reboot = sum(1 for a, b in faults if any(a - slack <= r <= b + slack for r in reboots))
+        drops_wifi = len(faults) - drops_reboot
+
+        # a roam is only noticed at the next API probe, so it can trail the flash by a whole interval
+        lag = {"roam": mon.o["api_interval"]}
+        trouble = sum(W[k] * _decay(now - ts) for ts, k, d in e if k in W and not (
+            _num(d, "cause") == "ota" or (k != "reboot" and ota_caused(ts, lag.get(k, 0)))))
+        trouble += sum((1 + math.log2(1 + (b - a) / 60)) * _decay(now - b) for a, b in faults)
         days = _obs_days(now - max(h.get("first_seen") or now, since))
 
         rssi = avg("rssi")
-        ping_loss = pct_fail("ping", 20)
+        offline = sum(b - max(a, since) for a, b in outages)
+        ping_loss = _online_loss(*s.get("ping", (0, 0))[:2], offline, mon.o["ping_interval"])
         api_fail = pct_fail("api", 3)
         mdns_fail = pct_fail("mdns", 10) if h.get("mdns_ok") else None
         score = (trouble / days + 0.5 * (ping_loss or 0) + 0.1 * (api_fail or 0) + 0.05 * (mdns_fail or 0)
@@ -133,8 +181,8 @@ def rank(mon, window, configured):
             "score": round(score, 1), "verdict": verdict,
             "ping_loss": ping_loss, "ping_ms": avg("ping"), "arp_fail": pct_fail("arp", 20),
             "api_fail": api_fail, "mdns_fail": mdns_fail, "http_fail": pct_fail("http", 3),
-            "drops": len(downs), "drops_reboot": drops_reboot, "drops_wifi": drops_wifi,
-            "reboots": len(reboots), "downtime_min": round(downtime / 60, 1),
+            "drops": len(faults), "drops_reboot": drops_reboot, "drops_wifi": drops_wifi,
+            "reboots": len(reboots), "ota": len(flashes), "downtime_min": round(downtime / 60, 1),
             "ip_changes": sum(1 for _, k, _ in e if k in ("ip_change", "ip_reassigned")),
             "roams": sum(1 for _, k, _ in e if k == "roam"),
             "mdns_goodbyes": sum(1 for _, k, _ in e if k == "mdns_goodbye"), "rssi": rssi,

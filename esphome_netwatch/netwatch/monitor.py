@@ -108,7 +108,12 @@ class Monitor:
                     self.ev(owner, "ip_change", f"{owner['ip']} -> {ip} ({source})")
                     if self.by_ip.get(owner["ip"]) == mac:
                         del self.by_ip[owner["ip"]]
-                owner.update(ip=ip, last_seen=time.time(), up=True)
+                now = time.time()
+                owner.update(ip=ip, last_seen=now)
+                if not owner.get("up"):                  # back from an outage: close it, or it never ends
+                    since = owner.get("down_since") or now
+                    owner.update(up=True, down_since=None)
+                    self.ev(owner, "up", {"duration": round(now - since)}, now)
             else:                                        # first time this MAC is known: re-key in place
                 self.store.rekey(cur["key"], mac)
                 self.store.delete_host(cur["key"])

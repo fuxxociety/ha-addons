@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.1
+- Firmware updates no longer count against a device. The short outage, failed API probe, mDNS goodbye and roam around
+  a flash are ignored, and a new OTA column counts flashes. An outage over 10 minutes still counts.
+- Ping loss now covers only the time a device was meant to be reachable. Outages were counted twice, as an outage and
+  as loss, and the loss never faded within the window.
+- A long outage that ends in a reboot now counts as a drop with a reboot, not a Wi-Fi drop.
+- An outage now ends when a host returns on a new IP. It used to stay open, which understated downtime.
+- All four apply to the stored history as well as new data.
+
 ## 0.2.0
 - **No more files as a source.** Devices, names, classes, areas and each device's own API key / password and web
   login now come from the ESPHome Device Builder add-on's API (`/devices`, `/json-config`), the same source Home

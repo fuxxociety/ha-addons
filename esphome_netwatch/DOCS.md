@@ -37,7 +37,13 @@ classifies the device again only when the credentials outcome changes.
 - Weights fade with a 3-day half-life.
 - The total is divided by how long the device has been observed, so a device first seen an hour ago compares fairly
   with one watched for two weeks.
-- Steady ping loss, API failures and weak RSSI add on top.
+- Steady ping loss, API failures and weak RSSI add on top. **Ping loss %** covers only the time a device was meant to
+  be reachable; time offline counts as an outage instead.
+
+**Firmware updates don't count against a device.** NetWatch recognises a flash from the changed build time. That
+reboot, and a short outage, failed API probe, mDNS goodbye or roam around it, neither score nor appear as drops; the
+**OTA** column counts the flashes instead. An outage over 10 minutes still counts: that is a failed flash or a dead
+device, not maintenance.
 
 The **Verdict** column separates **drops with a reboot** (power or crash: brown-out, failing regulator or capacitor,
 watchdog) from **drops without a reboot** (Wi-Fi: RF, AP, roaming, DHCP). Two summary tables follow the ranking:
