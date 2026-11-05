@@ -44,7 +44,11 @@ def make_app(mon, ingress_only):
         await mon._api(key)
         return web.json_response({"host": mon.hosts.get(key)})
 
+    async def clear(request):
+        return web.json_response(mon.clear_history())
+
     app = web.Application(middlewares=[guard])
     app.add_routes([web.get("/", index), web.get("/api/hosts", hosts),
-                    web.get("/api/host/{key}/events", events), web.post("/api/host/{key}/probe", probe_now)])
+                    web.get("/api/host/{key}/events", events), web.post("/api/host/{key}/probe", probe_now),
+                    web.post("/api/clear", clear)])
     return app

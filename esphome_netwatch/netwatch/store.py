@@ -77,6 +77,11 @@ class Store:
             q, a = "SELECT ts, key, ip, kind, detail FROM events WHERE ts>=? ORDER BY ts", (since,)
         return self.db.execute(q, a).fetchall()
 
+    def clear_history(self):
+        self.db.execute("DELETE FROM events")
+        self.db.execute("DELETE FROM stats")
+        self.db.commit()
+
     def prune(self, days):
         cut = time.time() - days * 86400
         self.db.execute("DELETE FROM events WHERE ts<?", (cut,))

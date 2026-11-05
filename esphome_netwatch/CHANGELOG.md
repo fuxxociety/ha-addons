@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.2
+- **Clear history** button: starts the ranking over, for example after repair work. Online hosts keep their identity
+  and offline hosts are forgotten. The erased data can't be recovered.
+
 ## 0.2.1
 - Firmware updates no longer count against a device. The short outage, failed API probe, mDNS goodbye and roam around
   a flash are ignored, and a new OTA column counts flashes. An outage over 10 minutes still counts.

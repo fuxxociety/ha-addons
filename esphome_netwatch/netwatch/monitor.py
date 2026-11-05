@@ -397,6 +397,25 @@ class Monitor:
             await asyncio.sleep(max(10, 2 * self.o["ping_interval"] - (time.monotonic() - t0)))
 
     # housekeeping -------------------------------------------------------
+    def clear_history(self):
+        """Start the ranking over. Hosts online now keep their identity, so boot time and firmware build still detect
+        changes and nothing is re-probed in a burst; the rest are forgotten and return as new if they reappear."""
+        self.store.clear_history()
+        now = time.time()
+        kept = 0
+        for k, h in list(self.hosts.items()):
+            if h.get("up") and h.get("ip"):
+                h.update(first_seen=now, api_streak=0)
+                self.save(h)
+                kept += 1
+            else:
+                self.store.delete_host(k)
+                del self.hosts[k]
+        self.by_ip = {ip: k for ip, k in self.by_ip.items() if k in self.hosts}
+        self.by_mdns = {n: k for n, k in self.by_mdns.items() if k in self.hosts}
+        self.misses.clear()
+        return {"kept": kept}
+
     async def prune_loop(self):
         while True:
             self.store.prune(self.o["retention_days"])

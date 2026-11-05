@@ -54,6 +54,12 @@ watchdog) from **drops without a reboot** (Wi-Fi: RF, AP, roaming, DHCP). Two su
 
 Click a row to see that device's events and to run **Probe now**.
 
+**Clear history** (click twice) starts the ranking over, for example after repair work:
+- All events and statistics are erased, and every device's observation time restarts.
+- Hosts online at that moment keep their identity, so reboots and firmware changes are still detected.
+- Offline hosts are forgotten. They return as new if they reappear; configured devices show as **never seen** until then.
+- The erased data can't be recovered.
+
 ## Where device data comes from
 
 Nothing is read from files. NetWatch asks the **ESPHome Device Builder** add-on, over the same API Home Assistant's

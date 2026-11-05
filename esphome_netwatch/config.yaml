@@ -1,5 +1,5 @@
 name: ESPHome NetWatch
-version: "0.2.1"
+version: "0.2.2"
 slug: esphome_netwatch
 description: >-
   Tracks every MAC on the IoT subnet and ranks devices by connectivity trouble

@@ -28,6 +28,7 @@
   <label>Window <select id="win"><option>1h</option><option>6h</option><option>24h</option><option selected>7d</option><option>14d</option></select></label>
   <label><input type="checkbox" id="esp" checked> ESPHome only</label>
   <span id="upd"></span>
+  <button id="clr">Clear history</button>
 </div>
 <div class="wrap"><table id="t"><thead></thead><tbody></tbody></table></div>
 <h2>By hardware class</h2>
@@ -109,6 +110,20 @@ async function showEvents(key) {
     || "<tr><td class=mute>no events in this window</td></tr>";
 }
 $("#win").onchange = load; $("#esp").onchange = render;
+// two clicks, no dialog: a dialog may be blocked inside the ingress frame
+let clrTimer = null;
+$("#clr").onclick = async () => {
+  const b = $("#clr");
+  if (!clrTimer) {
+    b.textContent = "Click again to erase all history";
+    clrTimer = setTimeout(() => { clrTimer = null; b.textContent = "Clear history"; }, 5000);
+    return;
+  }
+  clearTimeout(clrTimer); clrTimer = null; b.disabled = true;
+  await fetch("api/clear", {method: "POST"});
+  sel = null; $("#evh").textContent = ""; $("#ev tbody").innerHTML = "";
+  b.textContent = "Clear history"; b.disabled = false; load();
+};
 load(); setInterval(load, 30000);
 </script>
 </body>
